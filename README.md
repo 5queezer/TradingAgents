@@ -316,24 +316,6 @@ The gateway implementation combines client credential authentication with GitHub
    - Receive pre-authenticated requests with user identity in headers
    - Support various protocol versions based on implementation
 
-## 🚀 Try It Out - Public Test Servers
-
-Before setting up your own gateway, you can test the OAuth flow and MCP integration using my publicly available test servers:
-
-### Available Test Servers
-
-- **Echo Stateless**: https://echo-stateless.atratest.org/mcp
-  - Simple echo service without session state
-  - Each request is independent
-  - Perfect for testing basic OAuth flow and MCP protocol
-  - [📖 View Echo Stateless Documentation](https://atrawog.github.io/mcp-oauth-gateway/packages/mcp-echo-streamablehttp-server-stateless.html)
-
-- **Echo Stateful**: https://echo-stateful.atratest.org/mcp
-  - Echo service with session state management
-  - Includes `replayLastEcho` tool to test stateful operations
-  - Demonstrates session persistence across requests
-  - [📖 View Echo Stateful Documentation](https://atrawog.github.io/mcp-oauth-gateway/packages/mcp-echo-streamablehttp-server-stateful.html)
-
 ### How to Use
 
 These servers are configured to accept **any GitHub user** for authentication:
