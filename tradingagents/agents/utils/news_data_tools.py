@@ -23,20 +23,27 @@ def get_news(
 @tool
 def get_global_news(
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    query: Annotated[
+        str,
+        "Free-text topic to search for (e.g. 'Strait of Hormuz fertilizer', "
+        "'semiconductor export controls'). Use this to steer search toward "
+        "geopolitical events, supply shocks, regulation, or thematic catalysts "
+        "relevant to the instrument. Leave empty for generic macro context.",
+    ] = "",
     look_back_days: Annotated[int, "Number of days to look back"] = 7,
-    limit: Annotated[int, "Maximum number of articles to return"] = 5,
+    limit: Annotated[int, "Maximum number of articles to return"] = 15,
 ) -> str:
     """
-    Retrieve global news data.
+    Retrieve global/macroeconomic news, optionally steered by a topic query.
     Uses the configured news_data vendor.
-    Args:
-        curr_date (str): Current date in yyyy-mm-dd format
-        look_back_days (int): Number of days to look back (default 7)
-        limit (int): Maximum number of articles to return (default 5)
-    Returns:
-        str: A formatted string containing global news data
+
+    Call this tool multiple times with different `query` values to cover
+    distinct themes (e.g. once for the commodity angle, once for the
+    geopolitical angle) rather than relying on a single generic call.
     """
-    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+    return route_to_vendor(
+        "get_global_news", curr_date, query, look_back_days, limit
+    )
 
 @tool
 def get_insider_transactions(

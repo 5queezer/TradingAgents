@@ -106,35 +106,44 @@ def get_news_yfinance(
 
 def get_global_news_yfinance(
     curr_date: str,
+    query: str = "",
     look_back_days: int = 7,
-    limit: int = 10,
+    limit: int = 15,
 ) -> str:
     """
-    Retrieve global/macro economic news using yfinance Search.
+    Retrieve global/macro news using yfinance Search.
 
     Args:
         curr_date: Current date in yyyy-mm-dd format
+        query: Free-text search query (e.g. "Strait of Hormuz fertilizer").
+               When empty, falls back to a rotating set of generic macro queries
+               so ticker-agnostic callers still get a sensible default.
         look_back_days: Number of days to look back
         limit: Maximum number of articles to return
 
     Returns:
         Formatted string containing global news articles
     """
-    # Search queries for macro/global news
-    search_queries = [
-        "stock market economy",
-        "Federal Reserve interest rates",
-        "inflation economic outlook",
-        "global markets trading",
-    ]
+    # If caller supplies a specific query, honour it. Otherwise fall back to
+    # a small rotating set so the default behaviour still returns generic
+    # macro context.
+    if query and query.strip():
+        search_queries = [query.strip()]
+    else:
+        search_queries = [
+            "stock market economy",
+            "Federal Reserve interest rates",
+            "inflation economic outlook",
+            "geopolitics supply chain commodity",
+        ]
 
     all_news = []
     seen_titles = set()
 
     try:
-        for query in search_queries:
-            search = yf_retry(lambda q=query: yf.Search(
-                query=q,
+        for q in search_queries:
+            search = yf_retry(lambda query=q: yf.Search(
+                query=query,
                 news_count=limit,
                 enable_fuzzy_query=True,
             ))
@@ -156,8 +165,9 @@ def get_global_news_yfinance(
             if len(all_news) >= limit:
                 break
 
+        query_label = query.strip() if query and query.strip() else "general macro"
         if not all_news:
-            return f"No global news found for {curr_date}"
+            return f"No global news found for {curr_date} (query: {query_label})"
 
         # Calculate date range
         curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -191,7 +201,7 @@ def get_global_news_yfinance(
                 news_str += f"Link: {link}\n"
             news_str += "\n"
 
-        return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
+        return f"## Global Market News (query: {query_label}), from {start_date} to {curr_date}:\n\n{news_str}"
 
     except Exception as e:
         return f"Error fetching global news: {str(e)}"
