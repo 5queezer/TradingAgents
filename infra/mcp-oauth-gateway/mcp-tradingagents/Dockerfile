@@ -14,8 +14,7 @@ ARG TRADINGAGENTS_REPO=https://github.com/5queezer/TradingAgents.git
 RUN pip install --no-cache-dir \
         "tradingagents @ git+${TRADINGAGENTS_REPO}@${TRADINGAGENTS_REF}" \
         "mcp>=1.2.0" \
-        "redis>=5.0.0" \
-        "mcp-streamablehttp-proxy @ git+https://github.com/atrawog/mcp-streamablehttp-proxy.git"
+        "redis>=5.0.0"
 
 WORKDIR /app
 COPY server.py worker.py jobs.py /app/
@@ -27,4 +26,4 @@ USER appuser
 
 EXPOSE 3000
 
-CMD ["mcp-streamablehttp-proxy", "python", "/app/server.py"]
+CMD ["python", "/app/server.py"]
