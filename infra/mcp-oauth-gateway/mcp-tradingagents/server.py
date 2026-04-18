@@ -165,7 +165,11 @@ def start_analysis(
     """Queue a full TradingAgents analysis. Returns a job_id for polling.
 
     analysts defaults to ["market", "social", "news", "fundamentals"].
-    Runs take several minutes; use get_analysis_status / get_analysis_result.
+
+    Expected runtime: 3–10 minutes depending on LLM latency and debate rounds.
+    Poll get_analysis_status every 15–30 seconds (not faster — progress updates
+    arrive at node boundaries, not every second). When state transitions to
+    "done", call get_analysis_result for the full decision and reports.
     """
     client = get_client(REDIS_URL)
     job_id = new_job_id()
@@ -184,17 +188,28 @@ def start_analysis(
 
 @mcp.tool()
 def get_analysis_status(job_id: str) -> dict:
-    """Poll analysis job state."""
+    """Poll analysis job state.
+
+    `progress` is a structured object with `phase` (human label), `current_node`
+    (LangGraph node), `step` counter, `reports_done` (completed report
+    sections), debate-round counters, and `updated_at` timestamp.
+    Typical full analysis takes 3–10 minutes; poll every 15–30s.
+    """
     job = get_job(get_client(REDIS_URL), job_id)
     if not job:
         return {"error": "not_found", "job_id": job_id}
+    raw_progress = job.get("progress")
+    try:
+        progress = json.loads(raw_progress) if raw_progress else None
+    except (ValueError, TypeError):
+        progress = raw_progress
     return {
         "job_id": job_id,
         "state": job.get("state"),
         "created_at": job.get("created_at"),
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
-        "progress": job.get("progress"),
+        "progress": progress,
         "error": job.get("error"),
     }
 
