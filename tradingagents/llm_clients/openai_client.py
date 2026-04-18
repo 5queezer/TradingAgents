@@ -1,5 +1,5 @@
 import os
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from langchain_openai import ChatOpenAI
 
@@ -17,6 +17,57 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
+
+
+class FallbackChatModel:
+    """Wrap a primary chat model with a chain of fallback models.
+
+    LangChain's `RunnableWithFallbacks` from `.with_fallbacks()` works great
+    for `.invoke()` but does not expose `.bind_tools()` — that method lives
+    on the underlying chat-model class. TradingAgents agents call
+    `.bind_tools()` at construction time, so we build a thin proxy that:
+
+    - delegates `.bind_tools()` to every member of the chain (returning a
+      new `FallbackChatModel` whose members all have tools bound), and
+    - delegates everything else to the primary or to the fallback-wrapped
+      runnable as appropriate.
+    """
+
+    def __init__(self, primary, fallbacks: List[Any]):
+        self._primary = primary
+        self._fallbacks = list(fallbacks)
+        self._runnable = (
+            primary.with_fallbacks(self._fallbacks) if self._fallbacks else primary
+        )
+
+    def bind_tools(self, tools, **kwargs):
+        bound_primary = self._primary.bind_tools(tools, **kwargs)
+        bound_fallbacks = [fb.bind_tools(tools, **kwargs) for fb in self._fallbacks]
+        return FallbackChatModel(bound_primary, bound_fallbacks)
+
+    def invoke(self, *args, **kwargs):
+        return self._runnable.invoke(*args, **kwargs)
+
+    async def ainvoke(self, *args, **kwargs):
+        return await self._runnable.ainvoke(*args, **kwargs)
+
+    def stream(self, *args, **kwargs):
+        return self._runnable.stream(*args, **kwargs)
+
+    async def astream(self, *args, **kwargs):
+        async for chunk in self._runnable.astream(*args, **kwargs):
+            yield chunk
+
+    def batch(self, *args, **kwargs):
+        return self._runnable.batch(*args, **kwargs)
+
+    def __getattr__(self, name):
+        # Unknown attributes — try primary first (bind_tools callers etc.),
+        # then the fallback-wrapped runnable.
+        try:
+            return getattr(self._primary, name)
+        except AttributeError:
+            return getattr(self._runnable, name)
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
@@ -82,7 +133,30 @@ class OpenAIClient(BaseLLMClient):
         if self.provider == "openai":
             llm_kwargs["use_responses_api"] = True
 
-        return NormalizedChatOpenAI(**llm_kwargs)
+        # Env-driven retry bump (tenacity-based exponential backoff inside
+        # ChatOpenAI). Default 2 retries is too aggressive for flaky
+        # free-tier providers.
+        env_retries = os.environ.get("TRADINGAGENTS_LLM_MAX_RETRIES")
+        if env_retries and "max_retries" not in llm_kwargs:
+            llm_kwargs["max_retries"] = int(env_retries)
+
+        primary = NormalizedChatOpenAI(**llm_kwargs)
+
+        # Env-driven fallback chain. Same provider + base_url + api_key;
+        # only the model name differs. When primary errors (e.g. 429), the
+        # runnable tries each fallback in order.
+        fallback_models = [
+            m.strip()
+            for m in os.environ.get("TRADINGAGENTS_FALLBACK_MODELS", "").split(",")
+            if m.strip() and m.strip() != self.model
+        ]
+        if not fallback_models:
+            return primary
+
+        fallbacks = [
+            NormalizedChatOpenAI(**{**llm_kwargs, "model": m}) for m in fallback_models
+        ]
+        return FallbackChatModel(primary, fallbacks)
 
     def validate_model(self) -> bool:
         """Validate model for the provider."""

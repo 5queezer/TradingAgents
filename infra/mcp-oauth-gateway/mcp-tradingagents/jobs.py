@@ -10,7 +10,7 @@ import redis
 
 JOB_PREFIX = "tradingagents:job:"
 QUEUE_KEY = "tradingagents:queue"
-JOB_TTL_SECONDS = 7 * 24 * 3600
+JOB_TTL_SECONDS = 30 * 24 * 3600
 
 
 _client: Optional[redis.Redis] = None

@@ -2,8 +2,8 @@
 """Background worker that runs queued TradingAgents jobs from Redis.
 
 Analysis is streamed via LangGraph's updates mode so progress (current node,
-completed phases, report sections ready) can be written back to Redis for
-pollers.
+completed phases, report sections ready, LLM errors) can be written back to
+Redis for pollers.
 """
 from __future__ import annotations
 
@@ -12,19 +12,46 @@ import os
 import signal
 import time
 import traceback
-from typing import Any
+from typing import Any, Optional
+from uuid import UUID
+
+from langchain_core.callbacks import BaseCallbackHandler
 
 from jobs import JOB_PREFIX, get_client, get_job, pop_job, update_job
 
 REDIS_URL = os.environ["REDIS_URL"]
 
 _shutdown = False
+_current_job_id: Optional[str] = None
+_current_client = None
 
 
 def _sigterm(_sig, _frame):
+    """Mark the in-flight job as errored before exiting.
+
+    Without this, the Python process dies mid-graph, Redis still shows
+    state=running, and the next worker's housekeeping pass eventually
+    cleans it up. Doing it at SIGTERM makes the failure visible
+    immediately to any polling client.
+    """
     global _shutdown
     _shutdown = True
     print("[worker] shutdown requested", flush=True)
+    if _current_job_id and _current_client is not None:
+        try:
+            update_job(
+                _current_client,
+                _current_job_id,
+                state="error",
+                finished_at=str(int(time.time())),
+                error="worker_shutdown",
+            )
+            print(
+                f"[worker] marked in-flight job {_current_job_id} as error=worker_shutdown",
+                flush=True,
+            )
+        except Exception as exc:  # best-effort
+            print(f"[worker] could not mark in-flight job: {exc}", flush=True)
 
 
 signal.signal(signal.SIGTERM, _sigterm)
@@ -67,6 +94,118 @@ _REPORT_LABEL = {
 }
 
 
+class _ProgressTracker:
+    """Accumulates graph execution state and pushes snapshots to Redis."""
+
+    def __init__(self, client, job_id: str):
+        self.client = client
+        self.job_id = job_id
+        self.state: dict[str, Any] = {}
+        self.history: list[str] = []
+        self.step = 0
+        self.current_node: Optional[str] = None
+        self.last_llm_model: Optional[str] = None
+        self.active_fallback: Optional[str] = None
+        self.llm_errors: list[dict[str, str]] = []
+
+    def write(self) -> None:
+        reports_done = [
+            _REPORT_LABEL[section]
+            for section in _REPORT_LABEL
+            if self.state.get(section)
+        ]
+        debate_round = self.state.get("investment_debate_state", {}).get("count", 0)
+        risk_round = self.state.get("risk_debate_state", {}).get("count", 0)
+        progress = {
+            "current_node": self.current_node,
+            "phase": _PHASE_LABEL.get(self.current_node, self.current_node)
+            if self.current_node
+            else None,
+            "step": self.step,
+            "reports_done": reports_done,
+            "investment_debate_count": debate_round,
+            "risk_debate_count": risk_round,
+            "recent_nodes": self.history[-8:],
+            "active_model": self.last_llm_model,
+            "active_fallback": self.active_fallback,
+            "recent_llm_errors": self.llm_errors[-3:],
+            "updated_at": int(time.time()),
+        }
+        update_job(self.client, self.job_id, progress=json.dumps(progress))
+
+
+class _ProgressCallback(BaseCallbackHandler):
+    """LangChain callback that updates Redis progress on LLM lifecycle events.
+
+    - on_llm_start: records which model is currently being invoked. Fallback
+      chain switches show up here as a different model id.
+    - on_llm_error: appends error info so pollers see "rate_limited" state
+      even before the retry/fallback completes.
+    """
+
+    def __init__(
+        self,
+        tracker: _ProgressTracker,
+        primary_model: str,
+        fallback_models: list[str],
+    ):
+        self.tracker = tracker
+        self.primary_model = primary_model
+        self.fallback_models = fallback_models
+
+    def _model_from_serialized(self, serialized: Optional[dict], metadata: Optional[dict]) -> Optional[str]:
+        if metadata:
+            name = metadata.get("ls_model_name") or metadata.get("model_name")
+            if name:
+                return name
+        if serialized:
+            kwargs = serialized.get("kwargs") or {}
+            for key in ("model", "model_name", "deployment_name"):
+                if kwargs.get(key):
+                    return kwargs[key]
+        return None
+
+    def on_llm_start(
+        self,
+        serialized: Optional[dict],
+        prompts,
+        *,
+        run_id: UUID,
+        tags=None,
+        metadata=None,
+        **kwargs,
+    ):  # pragma: no cover - invoked by LangChain
+        model = self._model_from_serialized(serialized, metadata)
+        if not model:
+            return
+        self.tracker.last_llm_model = model
+        self.tracker.active_fallback = (
+            model if model != self.primary_model and model in self.fallback_models else None
+        )
+        self.tracker.write()
+
+    on_chat_model_start = on_llm_start  # same payload for chat models
+
+    def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        **kwargs,
+    ):  # pragma: no cover - invoked by LangChain
+        entry = {
+            "model": self.tracker.last_llm_model or "?",
+            "error_type": type(error).__name__,
+            "message": str(error)[:240],
+            "at": int(time.time()),
+        }
+        self.tracker.llm_errors.append(entry)
+        # Keep the bounded list small in memory too.
+        if len(self.tracker.llm_errors) > 20:
+            self.tracker.llm_errors = self.tracker.llm_errors[-20:]
+        self.tracker.write()
+
+
 def _build_config(payload: dict[str, Any]) -> dict[str, Any]:
     from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -106,32 +245,12 @@ def _merge_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
             state[key] = val
 
 
-def _write_progress(
-    client,
-    job_id: str,
-    node_name: str | None,
-    state: dict[str, Any],
-    history: list[str],
-    step: int,
-) -> None:
-    reports_done = [
-        _REPORT_LABEL[section]
-        for section in _REPORT_LABEL
-        if state.get(section)
+def _fallback_models_env() -> list[str]:
+    return [
+        m.strip()
+        for m in os.environ.get("TRADINGAGENTS_FALLBACK_MODELS", "").split(",")
+        if m.strip()
     ]
-    debate_round = state.get("investment_debate_state", {}).get("count", 0)
-    risk_round = state.get("risk_debate_state", {}).get("count", 0)
-    progress = {
-        "current_node": node_name,
-        "phase": _PHASE_LABEL.get(node_name, node_name) if node_name else None,
-        "step": step,
-        "reports_done": reports_done,
-        "investment_debate_count": debate_round,
-        "risk_debate_count": risk_round,
-        "recent_nodes": history[-8:],
-        "updated_at": int(time.time()),
-    }
-    update_job(client, job_id, progress=json.dumps(progress))
 
 
 def run_analysis(payload: dict[str, Any], client, job_id: str) -> dict[str, Any]:
@@ -139,25 +258,36 @@ def run_analysis(payload: dict[str, Any], client, job_id: str) -> dict[str, Any]
 
     cfg = _build_config(payload)
     analysts = payload.get("analysts") or ["market", "social", "news", "fundamentals"]
-    ta = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=cfg)
+    tracker = _ProgressTracker(client, job_id)
+    primary_model = cfg["quick_think_llm"]
+    fallbacks = _fallback_models_env()
+    callback = _ProgressCallback(tracker, primary_model, fallbacks)
+
+    ta = TradingAgentsGraph(
+        selected_analysts=analysts,
+        debug=False,
+        config=cfg,
+        callbacks=[callback],
+    )
 
     init_state = ta.propagator.create_initial_state(payload["ticker"], payload["date"])
-    args = ta.propagator.get_graph_args()
+    args = ta.propagator.get_graph_args(callbacks=[callback])
     args["stream_mode"] = "updates"
 
-    state: dict[str, Any] = dict(init_state)
-    history: list[str] = []
-    step = 0
-    _write_progress(client, job_id, "starting", state, history, step)
+    tracker.state = dict(init_state)
+    tracker.current_node = "starting"
+    tracker.write()
 
     for chunk in ta.graph.stream(init_state, **args):
         for node_name, delta in chunk.items():
-            step += 1
-            history.append(node_name)
+            tracker.step += 1
+            tracker.history.append(node_name)
+            tracker.current_node = node_name
             if delta:
-                _merge_delta(state, delta)
-            _write_progress(client, job_id, node_name, state, history, step)
+                _merge_delta(tracker.state, delta)
+            tracker.write()
 
+    state = tracker.state
     decision = ta.process_signal(state.get("final_trade_decision", ""))
     ta.curr_state = state
     try:
@@ -176,8 +306,9 @@ def run_analysis(payload: dict[str, Any], client, job_id: str) -> dict[str, Any]
             for section, label in _REPORT_LABEL.items()
             if state.get(section)
         },
-        "steps_executed": step,
-        "nodes_visited": history,
+        "steps_executed": tracker.step,
+        "nodes_visited": tracker.history,
+        "llm_errors_seen": len(tracker.llm_errors),
     }
 
 
@@ -191,7 +322,9 @@ def run_reflection(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def process(job_id: str) -> None:
+    global _current_job_id, _current_client
     client = get_client(REDIS_URL)
+    _current_client = client
     job = get_job(client, job_id)
     if not job:
         return
@@ -200,6 +333,7 @@ def process(job_id: str) -> None:
         return
 
     update_job(client, job_id, state="running", started_at=str(int(time.time())))
+    _current_job_id = job_id
     try:
         payload = json.loads(job.get("payload", "{}"))
         kind = payload.get("kind", "analysis")
@@ -225,6 +359,8 @@ def process(job_id: str) -> None:
             finished_at=str(int(time.time())),
             error=f"{type(exc).__name__}: {exc}",
         )
+    finally:
+        _current_job_id = None
 
 
 def _housekeeping(client) -> None:
