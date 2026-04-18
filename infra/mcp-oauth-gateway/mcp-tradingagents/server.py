@@ -44,7 +44,29 @@ _configure_tradingagents()
 
 from tradingagents.dataflows.interface import route_to_vendor  # noqa: E402
 
-mcp = FastMCP("tradingagents")
+_allowed_hosts = [
+    h.strip()
+    for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+]
+_cors_origins_raw = os.environ.get("MCP_CORS_ORIGINS", "*")
+_allowed_origins = (
+    ["*"]
+    if _cors_origins_raw.strip() == "*"
+    else [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+)
+
+mcp = FastMCP(
+    "tradingagents",
+    host="0.0.0.0",
+    port=3000,
+    streamable_http_path="/mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=bool(_allowed_hosts),
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=_allowed_origins,
+    ),
+)
 
 
 # ------------------------- Data tools (sync) -------------------------
@@ -234,21 +256,4 @@ def reflect_and_remember(source_job_id: str, position_return: float) -> dict:
 
 
 if __name__ == "__main__":
-    allowed_hosts = [
-        h.strip()
-        for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
-        if h.strip()
-    ]
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = 3000
-    mcp.settings.streamable_http_path = "/mcp"
-    mcp.settings.transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=bool(allowed_hosts),
-        allowed_hosts=allowed_hosts,
-        allowed_origins=[
-            o.strip()
-            for o in os.environ.get("MCP_CORS_ORIGINS", "*").split(",")
-            if o.strip() and o.strip() != "*"
-        ],
-    )
     mcp.run(transport="streamable-http")
