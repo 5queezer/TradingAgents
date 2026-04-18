@@ -1,8 +1,8 @@
 services:
   mcp-tradingagents:
     build:
-      context: ../../../
-      dockerfile: infra/mcp-oauth-gateway/mcp-tradingagents/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: mcp-tradingagents:latest
     container_name: mcp-tradingagents
     restart: unless-stopped
@@ -32,26 +32,26 @@ services:
       - "traefik.enable=true"
       - "traefik.http.services.mcp-tradingagents.loadbalancer.server.port=3000"
 
-      # OAuth discovery - priority 10 (public, no auth)
+      # OAuth discovery (no auth) - priority 10
       - "traefik.http.routers.mcp-tradingagents-oauth-discovery.rule=Host(`tradingagents.${BASE_DOMAIN}`) && PathPrefix(`/.well-known/oauth-authorization-server`)"
       - "traefik.http.routers.mcp-tradingagents-oauth-discovery.priority=10"
-      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.entrypoints=https"
       - "traefik.http.routers.mcp-tradingagents-oauth-discovery.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.middlewares=oauth-discovery-rewrite@docker"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.middlewares=oauth-discovery-rewrite@file"
       - "traefik.http.routers.mcp-tradingagents-oauth-discovery.service=auth@docker"
 
-      # CORS preflight - priority 4 (no auth)
+      # CORS preflight (no auth) - priority 4
       - "traefik.http.routers.mcp-tradingagents-cors.rule=Host(`tradingagents.${BASE_DOMAIN}`) && Method(`OPTIONS`)"
       - "traefik.http.routers.mcp-tradingagents-cors.priority=4"
-      - "traefik.http.routers.mcp-tradingagents-cors.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-cors.entrypoints=https"
       - "traefik.http.routers.mcp-tradingagents-cors.tls.certresolver=letsencrypt"
       - "traefik.http.routers.mcp-tradingagents-cors.service=mcp-tradingagents"
       - "traefik.http.routers.mcp-tradingagents-cors.middlewares=mcp-cors@file"
 
-      # Main MCP route with OAuth - priority 2
+      # Main MCP with OAuth - priority 2
       - "traefik.http.routers.mcp-tradingagents.rule=Host(`tradingagents.${BASE_DOMAIN}`) && PathPrefix(`/mcp`)"
       - "traefik.http.routers.mcp-tradingagents.priority=2"
-      - "traefik.http.routers.mcp-tradingagents.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents.entrypoints=https"
       - "traefik.http.routers.mcp-tradingagents.tls.certresolver=letsencrypt"
       - "traefik.http.routers.mcp-tradingagents.middlewares=mcp-cors@file,mcp-auth@file"
       - "traefik.http.routers.mcp-tradingagents.service=mcp-tradingagents"
@@ -59,15 +59,15 @@ services:
       # Catch-all (auth) - priority 1
       - "traefik.http.routers.mcp-tradingagents-catchall.rule=Host(`tradingagents.${BASE_DOMAIN}`)"
       - "traefik.http.routers.mcp-tradingagents-catchall.priority=1"
-      - "traefik.http.routers.mcp-tradingagents-catchall.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-catchall.entrypoints=https"
       - "traefik.http.routers.mcp-tradingagents-catchall.tls.certresolver=letsencrypt"
       - "traefik.http.routers.mcp-tradingagents-catchall.middlewares=mcp-cors@file,mcp-auth@file"
       - "traefik.http.routers.mcp-tradingagents-catchall.service=mcp-tradingagents"
 
       # HTTP -> HTTPS redirect
       - "traefik.http.routers.mcp-tradingagents-redirect.rule=Host(`tradingagents.${BASE_DOMAIN}`)"
-      - "traefik.http.routers.mcp-tradingagents-redirect.entrypoints=web"
-      - "traefik.http.routers.mcp-tradingagents-redirect.middlewares=redirect-to-https"
+      - "traefik.http.routers.mcp-tradingagents-redirect.entrypoints=http"
+      - "traefik.http.routers.mcp-tradingagents-redirect.middlewares=redirect-to-https@file"
       - "traefik.http.routers.mcp-tradingagents-redirect.priority=1"
       - "traefik.http.routers.mcp-tradingagents-redirect.service=mcp-tradingagents"
     healthcheck:
