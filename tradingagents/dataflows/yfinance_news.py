@@ -141,11 +141,18 @@ def get_global_news_yfinance(
     seen_titles = set()
 
     try:
+        # enable_fuzzy_query=True makes yfinance's search engine snap to the
+        # nearest ticker — so a topical query like "Strait of Hormuz" returns
+        # random stock news for CALY, SPY, etc. For topical/thematic news we
+        # want literal matching. Fuzzy still helps when the caller-supplied
+        # query is a typo'd ticker symbol, so we keep it for the default
+        # generic-macro branch (no explicit `query`) only.
+        fuzzy = not (query and query.strip())
         for q in search_queries:
             search = yf_retry(lambda query=q: yf.Search(
                 query=query,
                 news_count=limit,
-                enable_fuzzy_query=True,
+                enable_fuzzy_query=fuzzy,
             ))
 
             if search.news:
