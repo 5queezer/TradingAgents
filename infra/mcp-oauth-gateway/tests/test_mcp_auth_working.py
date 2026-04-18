@@ -1,0 +1,122 @@
+from .test_constants import HTTP_OK
+from .test_constants import HTTP_UNAUTHORIZED
+
+
+"""Test that MCP authentication is working correctly
+Following CLAUDE.md - NO MOCKING, real services only!
+"""
+
+import pytest
+
+
+class TestMCPAuthWorking:
+    """Verify MCP OAuth authentication is properly enforced."""
+
+    @pytest.mark.asyncio
+    async def test_mcp_requires_authentication(self, http_client, _wait_for_services, mcp_fetch_url):
+        """Test that MCP endpoints properly require authentication."""
+        # Test 1: Request without auth should fail
+        response = await http_client.post(
+            f"{mcp_fetch_url}",
+            json={"jsonrpc": "2.0", "method": "test", "id": 1},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+        assert response.status_code == HTTP_UNAUTHORIZED
+        assert "WWW-Authenticate" in response.headers
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+        error = response.json()
+        assert "error" in error
+        assert error["error"] == "invalid_request"
+        assert "error_description" in error
+
+        print("✅ MCP correctly rejects unauthenticated requests")
+
+        # Test 2: Request with invalid token should fail
+        response = await http_client.post(
+            f"{mcp_fetch_url}",
+            json={"jsonrpc": "2.0", "method": "test", "id": 1},
+            headers={
+                "Authorization": "Bearer invalid_token_12345",
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+
+        assert response.status_code == HTTP_UNAUTHORIZED
+        error = response.json()
+        assert "error" in error
+        assert error["error"] == "invalid_token"
+
+        print("✅ MCP correctly rejects invalid tokens")
+
+        # Test 3: Verify different auth header formats are rejected
+        invalid_auth_headers = [
+            "Basic dXNlcjpwYXNz",  # Basic auth
+            "Token sometoken",  # Wrong scheme
+            "Bearer",  # No token
+            "",  # Empty
+        ]
+
+        for auth_header in invalid_auth_headers:
+            response = await http_client.post(
+                f"{mcp_fetch_url}",
+                json={"jsonrpc": "2.0", "method": "test", "id": 1},
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
+
+            assert response.status_code == HTTP_UNAUTHORIZED, (
+                f"Expected 401 for auth header '{auth_header}', got {response.status_code}"  # TODO: Break long line
+            )
+
+        print("✅ MCP correctly rejects all invalid auth formats")
+
+        # Test 4: Verify CORS headers are properly configured (REQUIRED!)
+        import os
+
+        cors_origins = os.getenv("MCP_CORS_ORIGINS", "").split(",")
+        cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
+
+        assert cors_origins, "❌ MCP_CORS_ORIGINS environment variable MUST be configured!"
+
+        # Test with the first configured origin
+        test_origin = cors_origins[0]
+        if "*" in test_origin:
+            # Convert wildcard to a test origin
+            domain_parts = test_origin.split("*.")
+            if len(domain_parts) > 1:
+                test_origin = f"https://app.{domain_parts[1]}"
+
+        response = await http_client.options(
+            f"{mcp_fetch_url}",
+            headers={
+                "Origin": test_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+        # CORS MUST be configured for web clients
+        assert response.status_code == HTTP_OK, "❌ MCP MUST support CORS preflight requests!"
+        assert "access-control-allow-origin" in response.headers, "❌ Missing CORS headers!"
+        assert response.headers["access-control-allow-origin"] == test_origin, (
+            f"❌ CORS origin mismatch! Expected {test_origin}"
+        )
+        assert "access-control-allow-methods" in response.headers, "❌ Missing allowed methods!"
+        assert "access-control-allow-credentials" in response.headers, "❌ Missing credentials header!"
+
+        print(f"✅ MCP CORS is properly configured for {test_origin}")
+
+        print("\n🎉 MCP OAuth authentication is working correctly!")
+        print("✅ Unauthenticated requests are properly rejected with 401")
+        print("✅ Invalid tokens are rejected")
+        print("✅ All authentication formats are validated")
+        print("✅ CORS is properly configured for web clients")

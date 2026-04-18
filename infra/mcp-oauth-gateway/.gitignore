@@ -1,0 +1,110 @@
+# MANDATORY git-ignores for ALL projects per CLAUDE.md commandments\!
+
+# Sacred Environment Configuration - NEVER commit\!
+.env
+.env.*
+!.env.example
+
+# Analysis outputs stay local - Sacred reports directory
+/reports/
+
+# Coverage reports stay local
+/htmlcov/
+.coverage*
+
+# Logs never enter version control
+/logs/
+*.log
+
+# Python artifacts - No compiled Python\!
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments (though we use pixi)
+venv/
+ENV/
+env/
+.venv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker volumes (local development)
+volumes/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Pixi environments
+.pixi/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# pytest cache
+.pytest_cache/
+
+# mypy cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Redis dump files
+dump.rdb
+
+# Certificate files (if stored locally)
+*.pem
+*.key
+*.crt
+*.cer
+
+# OAuth tokens and secrets
+*_token.json
+*_secret.txt
+
+# MCP configuration (contains bearer tokens)
+mcp-config.json
+
+# Session files
+sessions/
+
+# MCP HTTP-to-stdio credentials
+mcp-http-stdio/.env
+credentials.json
+.mcp/
+
+# OAuth backups (contain sensitive tokens!)
+backups/
+*.backup.json
+oauth-backup-*.json
+
+# Generated docker-compose includes
+docker-compose.includes.yml
+
+# Generated Traefik middleware configuration
+traefik/dynamic/middlewares.yml

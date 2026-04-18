@@ -1,0 +1,61 @@
+# Table of contents
+# Learn more at https://jupyterbook.org/customize/toc.html
+
+format: jb-book
+root: index
+parts:
+  - caption: Getting Started
+    chapters:
+      - file: overview
+      - file: quick-install
+      - file: production-test-install
+      - file: architecture/index
+        sections:
+          - file: architecture/system-components
+          - file: architecture/oauth-flow
+          - file: architecture/mcp-integration
+          - file: architecture/security
+
+  - caption: Development Tools
+    chapters:
+      - file: justfile-reference
+        sections:
+          - file: justfile-commands/testing
+          - file: justfile-commands/docker-operations
+          - file: justfile-commands/oauth-management
+          - file: justfile-commands/logging
+          - file: justfile-commands/utilities
+
+  - caption: Python Packages
+    chapters:
+      - file: packages/index
+      - file: packages/python-packages-overview
+      - file: packages/mcp-oauth-dynamicclient
+      - file: packages/mcp-oauth-dynamicclient-detailed
+      - file: packages/mcp-streamablehttp-client
+      - file: packages/mcp-streamablehttp-client-detailed
+      - file: packages/mcp-streamablehttp-proxy
+      - file: packages/mcp-streamablehttp-proxy-detailed
+      - file: packages/mcp-fetch-streamablehttp-server
+      - file: packages/mcp-fetch-streamablehttp-server-detailed
+      - file: packages/mcp-echo-streamablehttp-server-stateful
+      - file: packages/mcp-echo-streamablehttp-server-stateful-detailed
+      - file: packages/mcp-echo-streamablehttp-server-stateless
+      - file: packages/mcp-echo-streamablehttp-server-stateless-detailed
+
+  - caption: Service Implementations
+    chapters:
+      - file: services/index
+      - file: services/infrastructure
+        sections:
+          - file: services/auth
+          - file: services/traefik
+          - file: services/redis
+      - file: services/mcp-services
+        sections:
+          - file: services/mcp-fetch
+
+  - caption: API Reference
+    chapters:
+      - file: api/index
+      - file: api/oauth-endpoints

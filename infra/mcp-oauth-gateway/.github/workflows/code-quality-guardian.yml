@@ -1,0 +1,157 @@
+# 🔥 Sacred Code Quality Guardian - The Divine CI/CD Protector! ⚡
+# Prevents deprecated patterns and ensures code quality in all PRs and commits
+
+name: "🔥 Code Quality Guardian ⚡"
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  # 🔥 Linting and Deprecation Hunting Job ⚡
+  lint-and-hunt:
+    name: "🔥 Lint & Hunt Deprecations"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: "📥 Checkout Sacred Code"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+          submodules: recursive  # Initialize submodules
+
+      - name: "🐍 Setup Python Environment"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "🔍 Debug - List files"
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Files in root:"
+          ls -la
+          echo "Checking for pixi files:"
+          ls -la pixi* || echo "No pixi files found"
+
+      - name: "📦 Setup Pixi Environment"
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          pixi-version: v0.47.0
+          cache: true
+          cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+
+      - name: "🔧 Install just"
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: "🌍 Setup CI Environment"
+        run: |
+          touch .env
+          echo "# CI environment" >> .env
+
+      - name: "📦 Install Dependencies"
+        run: pixi install
+
+      - name: "🔥 Run Ruff Linting (Sacred Syntax Check)"
+        run: |
+          echo "🔥 RUNNING SACRED RUFF LINTING ⚡"
+          just lint
+        continue-on-error: true  # Continue to show all issues
+
+      - name: "⚡ Run Pydantic Deprecation Hunt"
+        run: |
+          echo "🔥 STARTING PYDANTIC DEPRECATION HUNT ⚡"
+          just lint-pydantic
+
+      - name: "🎨 Check Code Formatting"
+        run: |
+          echo "🔥 CHECKING SACRED CODE FORMATTING ⚡"
+          just format-check
+
+      - name: "🔒 Security Scan with Bandit"
+        run: |
+          echo "🔥 RUNNING SECURITY SCAN ⚡"
+          just security-scan-json || true
+          just security-scan
+        continue-on-error: true
+
+      - name: "📊 Upload Security Report"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: bandit-report.json
+          retention-days: 30
+
+
+  # 🔗 Pre-commit Hook Validation ⚡
+  pre-commit-check:
+    name: "🔗 Pre-commit Validation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: "📥 Checkout Sacred Code"
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # Initialize submodules
+
+      - name: "🐍 Setup Python Environment"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "📦 Setup Pixi Environment"
+        uses: prefix-dev/setup-pixi@v0.8.10
+        with:
+          pixi-version: v0.47.0
+          cache: true
+
+      - name: "🔧 Install just"
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: "🌍 Setup CI Environment"
+        run: |
+          touch .env
+          echo "# CI environment" >> .env
+
+      - name: "⚡ Run Pre-commit Hooks"
+        run: |
+          echo "🔥 RUNNING PRE-COMMIT HOOKS ⚡"
+          pixi install
+          just lint
+        continue-on-error: true  # Show results but don't fail CI yet
+
+  # 📋 Summary Job ⚡
+  quality-summary:
+    name: "📋 Quality Summary"
+    runs-on: ubuntu-latest
+    needs: [lint-and-hunt, pre-commit-check]
+    if: always()
+
+    steps:
+      - name: "📊 Quality Gate Summary"
+        run: |
+          echo "🔥 CODE QUALITY GUARDIAN SUMMARY ⚡"
+          echo "=================================="
+          echo "Linting: ${{ needs.lint-and-hunt.result }}"
+          echo "Pre-commit: ${{ needs.pre-commit-check.result }}"
+          echo "=================================="
+
+          if [[ "${{ needs.lint-and-hunt.result }}" == "failure" ]]; then
+            echo "❌ CRITICAL: Linting failures detected!"
+            echo "🔥 Fix linting errors immediately! ⚡"
+          fi
+
+          if [[ "${{ needs.lint-and-hunt.result }}" == "success" && "${{ needs.pre-commit-check.result }}" == "success" ]]; then
+            echo "✅ DIVINE COMPLIANCE ACHIEVED! ⚡"
+            echo "🏆 Code quality guardian approves! 🏆"
+          fi
