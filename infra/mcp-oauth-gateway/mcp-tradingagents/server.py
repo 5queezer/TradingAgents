@@ -11,6 +11,7 @@ import os
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from jobs import (
     create_job,
@@ -233,7 +234,21 @@ def reflect_and_remember(source_job_id: str, position_return: float) -> dict:
 
 
 if __name__ == "__main__":
+    allowed_hosts = [
+        h.strip()
+        for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    ]
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = 3000
     mcp.settings.streamable_http_path = "/mcp"
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=bool(allowed_hosts),
+        allowed_hosts=allowed_hosts,
+        allowed_origins=[
+            o.strip()
+            for o in os.environ.get("MCP_CORS_ORIGINS", "*").split(",")
+            if o.strip() and o.strip() != "*"
+        ],
+    )
     mcp.run(transport="streamable-http")
