@@ -1,6 +1,7 @@
 import os
 from typing import Any, List, Optional
 
+from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from .base_client import BaseLLMClient, normalize_content
@@ -19,21 +20,30 @@ class NormalizedChatOpenAI(ChatOpenAI):
         return normalize_content(super().invoke(input, config, **kwargs))
 
 
-class FallbackChatModel:
-    """Wrap a primary chat model with a chain of fallback models.
+class FallbackChatModel(Runnable):
+    """Primary chat model + ordered fallbacks with `.bind_tools()` support.
 
-    LangChain's `RunnableWithFallbacks` from `.with_fallbacks()` works great
-    for `.invoke()` but does not expose `.bind_tools()` — that method lives
-    on the underlying chat-model class. TradingAgents agents call
-    `.bind_tools()` at construction time, so we build a thin proxy that:
+    Why this exists
+    ---------------
+    LangChain's native `.with_fallbacks()` returns a `RunnableWithFallbacks`
+    that is a valid `Runnable` (pipes, invoke, batch — all work). But it
+    does *not* expose `.bind_tools()`, because tools are bound on the
+    underlying chat-model class, not on the runnable wrapper. TradingAgents
+    agents call `llm.bind_tools(tools)` at construction time, so we need
+    `.bind_tools()` on the same object the factory returns from `get_llm()`.
 
-    - delegates `.bind_tools()` to every member of the chain (returning a
-      new `FallbackChatModel` whose members all have tools bound), and
-    - delegates everything else to the primary or to the fallback-wrapped
-      runnable as appropriate.
+    Behaviour
+    ---------
+    - As a `Runnable`: forwards `invoke` / `stream` / `batch` to the
+      fallback-wrapped runnable, so `prompt | llm` works even without
+      binding tools.
+    - `.bind_tools(tools)` returns a native `RunnableWithFallbacks` over
+      each chain member with tools bound — the caller gets a proper
+      LangChain Runnable straight away.
     """
 
     def __init__(self, primary, fallbacks: List[Any]):
+        super().__init__()
         self._primary = primary
         self._fallbacks = list(fallbacks)
         self._runnable = (
@@ -42,27 +52,29 @@ class FallbackChatModel:
 
     def bind_tools(self, tools, **kwargs):
         bound_primary = self._primary.bind_tools(tools, **kwargs)
+        if not self._fallbacks:
+            return bound_primary
         bound_fallbacks = [fb.bind_tools(tools, **kwargs) for fb in self._fallbacks]
-        return FallbackChatModel(bound_primary, bound_fallbacks)
+        return bound_primary.with_fallbacks(bound_fallbacks)
 
-    def invoke(self, *args, **kwargs):
-        return self._runnable.invoke(*args, **kwargs)
+    def invoke(self, input, config=None, **kwargs):
+        return self._runnable.invoke(input, config=config, **kwargs)
 
-    async def ainvoke(self, *args, **kwargs):
-        return await self._runnable.ainvoke(*args, **kwargs)
+    async def ainvoke(self, input, config=None, **kwargs):
+        return await self._runnable.ainvoke(input, config=config, **kwargs)
 
-    def stream(self, *args, **kwargs):
-        return self._runnable.stream(*args, **kwargs)
+    def stream(self, input, config=None, **kwargs):
+        return self._runnable.stream(input, config=config, **kwargs)
 
-    async def astream(self, *args, **kwargs):
-        async for chunk in self._runnable.astream(*args, **kwargs):
+    async def astream(self, input, config=None, **kwargs):
+        async for chunk in self._runnable.astream(input, config=config, **kwargs):
             yield chunk
 
-    def batch(self, *args, **kwargs):
-        return self._runnable.batch(*args, **kwargs)
+    def batch(self, inputs, config=None, **kwargs):
+        return self._runnable.batch(inputs, config=config, **kwargs)
 
     def __getattr__(self, name):
-        # Unknown attributes — try primary first (bind_tools callers etc.),
+        # Unknown attributes — try primary first (it's the real chat model),
         # then the fallback-wrapped runnable.
         try:
             return getattr(self._primary, name)
