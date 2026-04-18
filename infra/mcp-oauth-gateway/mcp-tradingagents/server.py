@@ -233,4 +233,7 @@ def reflect_and_remember(source_job_id: str, position_return: float) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.settings.host = "0.0.0.0"
+    mcp.settings.port = 3000
+    mcp.settings.streamable_http_path = "/mcp"
+    mcp.run(transport="streamable-http")
