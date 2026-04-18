@@ -1,0 +1,112 @@
+services:
+  mcp-tradingagents:
+    build:
+      context: ../../../
+      dockerfile: infra/mcp-oauth-gateway/mcp-tradingagents/Dockerfile
+    image: mcp-tradingagents:latest
+    container_name: mcp-tradingagents
+    restart: unless-stopped
+    networks:
+      - public
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - LOG_FILE=/logs/server.log
+      - MCP_CORS_ORIGINS=${MCP_CORS_ORIGINS}
+      - MCP_PROTOCOL_VERSION=2025-03-26
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - TRADINGAGENTS_LLM_PROVIDER=${TRADINGAGENTS_LLM_PROVIDER:-openai}
+      - TRADINGAGENTS_DEEP_THINK_LLM=${TRADINGAGENTS_DEEP_THINK_LLM:-}
+      - TRADINGAGENTS_QUICK_THINK_LLM=${TRADINGAGENTS_QUICK_THINK_LLM:-}
+      - TRADINGAGENTS_MAX_DEBATE_ROUNDS=${TRADINGAGENTS_MAX_DEBATE_ROUNDS:-1}
+    volumes:
+      - tradingagents-data:/home/appuser/.tradingagents
+      - ../logs/mcp-tradingagents:/logs
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.mcp-tradingagents.loadbalancer.server.port=3000"
+
+      # OAuth discovery - priority 10 (public, no auth)
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.rule=Host(`tradingagents.${BASE_DOMAIN}`) && PathPrefix(`/.well-known/oauth-authorization-server`)"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.priority=10"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.middlewares=oauth-discovery-rewrite@docker"
+      - "traefik.http.routers.mcp-tradingagents-oauth-discovery.service=auth@docker"
+
+      # CORS preflight - priority 4 (no auth)
+      - "traefik.http.routers.mcp-tradingagents-cors.rule=Host(`tradingagents.${BASE_DOMAIN}`) && Method(`OPTIONS`)"
+      - "traefik.http.routers.mcp-tradingagents-cors.priority=4"
+      - "traefik.http.routers.mcp-tradingagents-cors.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-cors.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.mcp-tradingagents-cors.service=mcp-tradingagents"
+      - "traefik.http.routers.mcp-tradingagents-cors.middlewares=mcp-cors@file"
+
+      # Main MCP route with OAuth - priority 2
+      - "traefik.http.routers.mcp-tradingagents.rule=Host(`tradingagents.${BASE_DOMAIN}`) && PathPrefix(`/mcp`)"
+      - "traefik.http.routers.mcp-tradingagents.priority=2"
+      - "traefik.http.routers.mcp-tradingagents.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.mcp-tradingagents.middlewares=mcp-cors@file,mcp-auth@file"
+      - "traefik.http.routers.mcp-tradingagents.service=mcp-tradingagents"
+
+      # Catch-all (auth) - priority 1
+      - "traefik.http.routers.mcp-tradingagents-catchall.rule=Host(`tradingagents.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.mcp-tradingagents-catchall.priority=1"
+      - "traefik.http.routers.mcp-tradingagents-catchall.entrypoints=websecure"
+      - "traefik.http.routers.mcp-tradingagents-catchall.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.mcp-tradingagents-catchall.middlewares=mcp-cors@file,mcp-auth@file"
+      - "traefik.http.routers.mcp-tradingagents-catchall.service=mcp-tradingagents"
+
+      # HTTP -> HTTPS redirect
+      - "traefik.http.routers.mcp-tradingagents-redirect.rule=Host(`tradingagents.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.mcp-tradingagents-redirect.entrypoints=web"
+      - "traefik.http.routers.mcp-tradingagents-redirect.middlewares=redirect-to-https"
+      - "traefik.http.routers.mcp-tradingagents-redirect.priority=1"
+      - "traefik.http.routers.mcp-tradingagents-redirect.service=mcp-tradingagents"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"'$$MCP_PROTOCOL_VERSION'\",\"capabilities\":{},\"clientInfo\":{\"name\":\"healthcheck\",\"version\":\"1.0\"}},\"id\":1}' | grep -q '\"protocolVersion\":\"'$$MCP_PROTOCOL_VERSION'\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  mcp-tradingagents-worker:
+    image: mcp-tradingagents:latest
+    container_name: mcp-tradingagents-worker
+    restart: unless-stopped
+    networks:
+      - public
+    depends_on:
+      mcp-tradingagents:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - TRADINGAGENTS_LLM_PROVIDER=${TRADINGAGENTS_LLM_PROVIDER:-openai}
+      - TRADINGAGENTS_DEEP_THINK_LLM=${TRADINGAGENTS_DEEP_THINK_LLM:-}
+      - TRADINGAGENTS_QUICK_THINK_LLM=${TRADINGAGENTS_QUICK_THINK_LLM:-}
+      - TRADINGAGENTS_MAX_DEBATE_ROUNDS=${TRADINGAGENTS_MAX_DEBATE_ROUNDS:-1}
+    volumes:
+      - tradingagents-data:/home/appuser/.tradingagents
+      - ../logs/mcp-tradingagents-worker:/logs
+    command: ["python", "/app/worker.py"]
+
+networks:
+  public:
+    external: true
+
+volumes:
+  tradingagents-data:
