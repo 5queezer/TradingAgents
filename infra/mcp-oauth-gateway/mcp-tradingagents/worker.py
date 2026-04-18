@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Background worker that runs queued TradingAgents jobs from Redis."""
+"""Background worker that runs queued TradingAgents jobs from Redis.
+
+Analysis is streamed via LangGraph's updates mode so progress (current node,
+completed phases, report sections ready) can be written back to Redis for
+pollers.
+"""
 from __future__ import annotations
 
 import json
@@ -26,6 +31,42 @@ signal.signal(signal.SIGTERM, _sigterm)
 signal.signal(signal.SIGINT, _sigterm)
 
 
+# Node-name → human-friendly phase label.
+_PHASE_LABEL = {
+    "Market Analyst": "Market Analyst",
+    "Social Analyst": "Social Analyst",
+    "News Analyst": "News Analyst",
+    "Fundamentals Analyst": "Fundamentals Analyst",
+    "tools_market": "Market Analyst (tools)",
+    "tools_social": "Social Analyst (tools)",
+    "tools_news": "News Analyst (tools)",
+    "tools_fundamentals": "Fundamentals Analyst (tools)",
+    "Msg Clear Market": "Market Analyst (cleanup)",
+    "Msg Clear Social": "Social Analyst (cleanup)",
+    "Msg Clear News": "News Analyst (cleanup)",
+    "Msg Clear Fundamentals": "Fundamentals Analyst (cleanup)",
+    "Bull Researcher": "Bull Researcher (debate)",
+    "Bear Researcher": "Bear Researcher (debate)",
+    "Research Manager": "Research Manager",
+    "Trader": "Trader",
+    "Aggressive Analyst": "Risk Debate — Aggressive",
+    "Conservative Analyst": "Risk Debate — Conservative",
+    "Neutral Analyst": "Risk Debate — Neutral",
+    "Portfolio Manager": "Portfolio Manager",
+}
+
+# Report section → completion label.
+_REPORT_LABEL = {
+    "market_report": "Market Analysis",
+    "sentiment_report": "Social Sentiment",
+    "news_report": "News Analysis",
+    "fundamentals_report": "Fundamentals Analysis",
+    "investment_plan": "Research Team Plan",
+    "trader_investment_plan": "Trader Plan",
+    "final_trade_decision": "Final Trade Decision",
+}
+
+
 def _build_config(payload: dict[str, Any]) -> dict[str, Any]:
     from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -50,19 +91,93 @@ def _build_config(payload: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
-def run_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+def _merge_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
+    """Merge a LangGraph node delta into accumulated state.
+
+    Most TradingAgents fields use the default replace reducer; `messages` uses
+    add_messages which appends. We don't rely on messages downstream, but we
+    still concat to keep state coherent.
+    """
+    for key, val in delta.items():
+        if key == "messages" and isinstance(val, list):
+            state.setdefault("messages", [])
+            state["messages"].extend(val)
+        else:
+            state[key] = val
+
+
+def _write_progress(
+    client,
+    job_id: str,
+    node_name: str | None,
+    state: dict[str, Any],
+    history: list[str],
+    step: int,
+) -> None:
+    reports_done = [
+        _REPORT_LABEL[section]
+        for section in _REPORT_LABEL
+        if state.get(section)
+    ]
+    debate_round = state.get("investment_debate_state", {}).get("count", 0)
+    risk_round = state.get("risk_debate_state", {}).get("count", 0)
+    progress = {
+        "current_node": node_name,
+        "phase": _PHASE_LABEL.get(node_name, node_name) if node_name else None,
+        "step": step,
+        "reports_done": reports_done,
+        "investment_debate_count": debate_round,
+        "risk_debate_count": risk_round,
+        "recent_nodes": history[-8:],
+        "updated_at": int(time.time()),
+    }
+    update_job(client, job_id, progress=json.dumps(progress))
+
+
+def run_analysis(payload: dict[str, Any], client, job_id: str) -> dict[str, Any]:
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     cfg = _build_config(payload)
     analysts = payload.get("analysts") or ["market", "social", "news", "fundamentals"]
     ta = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=cfg)
-    state, decision = ta.propagate(payload["ticker"], payload["date"])
+
+    init_state = ta.propagator.create_initial_state(payload["ticker"], payload["date"])
+    args = ta.propagator.get_graph_args()
+    args["stream_mode"] = "updates"
+
+    state: dict[str, Any] = dict(init_state)
+    history: list[str] = []
+    step = 0
+    _write_progress(client, job_id, "starting", state, history, step)
+
+    for chunk in ta.graph.stream(init_state, **args):
+        for node_name, delta in chunk.items():
+            step += 1
+            history.append(node_name)
+            if delta:
+                _merge_delta(state, delta)
+            _write_progress(client, job_id, node_name, state, history, step)
+
+    decision = ta.process_signal(state.get("final_trade_decision", ""))
+    ta.curr_state = state
+    try:
+        ta._log_state(payload["date"], state)
+    except Exception as exc:  # logging is best-effort
+        print(f"[worker] _log_state failed: {exc}", flush=True)
+
     return {
         "decision": decision,
+        "final_trade_decision": state.get("final_trade_decision"),
         "ticker": payload["ticker"],
         "date": payload["date"],
         "analysts": analysts,
-        "state_keys": list(state.keys()) if isinstance(state, dict) else [],
+        "reports": {
+            label: state.get(section)
+            for section, label in _REPORT_LABEL.items()
+            if state.get(section)
+        },
+        "steps_executed": step,
+        "nodes_visited": history,
     }
 
 
@@ -91,7 +206,7 @@ def process(job_id: str) -> None:
         if kind == "reflect":
             result = run_reflection(payload)
         else:
-            result = run_analysis(payload)
+            result = run_analysis(payload, client, job_id)
         update_job(
             client,
             job_id,
