@@ -14,7 +14,7 @@ import time
 import traceback
 from typing import Any
 
-from jobs import get_client, get_job, pop_job, update_job
+from jobs import JOB_PREFIX, get_client, get_job, pop_job, update_job
 
 REDIS_URL = os.environ["REDIS_URL"]
 
@@ -227,10 +227,30 @@ def process(job_id: str) -> None:
         )
 
 
+def _housekeeping(client) -> None:
+    """Mark jobs still flagged `running` as errored — their previous worker died."""
+    now = int(time.time())
+    rescued = 0
+    for key in client.scan_iter(match=JOB_PREFIX + "*", count=100):
+        if client.hget(key, "state") == "running":
+            client.hset(key, mapping={
+                "state": "error",
+                "error": "worker_restart_detected",
+                "finished_at": str(now),
+            })
+            rescued += 1
+    if rescued:
+        print(
+            f"[worker] housekeeping: marked {rescued} stuck job(s) as errored",
+            flush=True,
+        )
+
+
 def main() -> None:
     redis_host = REDIS_URL.split("@")[-1]
     print(f"[worker] starting, redis={redis_host}", flush=True)
     client = get_client(REDIS_URL)
+    _housekeeping(client)
     while not _shutdown:
         job_id = pop_job(client, timeout=5)
         if job_id:
